@@ -4,7 +4,7 @@ Self-hosted fragrance collection and recommendation app. The stack is designed f
 
 ## Start
 
-1. Copy `.env.example` to `.env` and set strong values for `POSTGRES_PASSWORD`, `SESSION_SECRET`, and `CREDENTIAL_ENCRYPTION_KEY` (32 bytes, URL-safe base64). Add an OpenRouter key in Settings or set `OPENROUTER_API_KEY`.
+1. Copy `.env.example` to `.env` and set strong values for `POSTGRES_PASSWORD`, `SESSION_SECRET`, and `CREDENTIAL_ENCRYPTION_KEY` (32 bytes, URL-safe base64). Use a long alphanumeric PostgreSQL password, or URL-encode reserved characters if you set a custom `DATABASE_URL`. Add an OpenRouter key in Settings or set `OPENROUTER_API_KEY`.
 2. Run `docker compose up -d --build`.
 3. Open `http://<VM-LAN-IP>:8080`. Create the initial account. The first account created is the administrator.
 
