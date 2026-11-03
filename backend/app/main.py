@@ -1,7 +1,7 @@
 import os, secrets, logging, time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, UploadFile, File, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -64,9 +64,29 @@ UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
 app.mount('/uploads',StaticFiles(directory=str(UPLOAD_DIR)),name='uploads')
 password_hash=PasswordHash.recommended()
 COOKIE=os.getenv('SESSION_COOKIE','sillage_session')
+PUBLIC_BASE_URL=os.getenv('PUBLIC_BASE_URL','').strip()
+
+def _normalized_origin(value):
+    try:
+        parsed=urlsplit((value or '').strip())
+        scheme=parsed.scheme.lower()
+        if scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ('','/') or parsed.query or parsed.fragment:
+            return None
+        port=parsed.port
+        if port==(443 if scheme=='https' else 80): port=None
+        return scheme,parsed.hostname.rstrip('.').lower(),port
+    except ValueError:
+        return None
+
+def _cookies_secure():
+    configured=_normalized_origin(PUBLIC_BASE_URL)
+    return os.getenv('COOKIE_SECURE','false').lower()=='true' or bool(configured and configured[0]=='https')
 
 @app.on_event('startup')
-def startup(): Base.metadata.create_all(engine)
+def startup():
+    if PUBLIC_BASE_URL and not _normalized_origin(PUBLIC_BASE_URL):
+        raise RuntimeError('PUBLIC_BASE_URL must be an http(s) origin such as https://sillage.example.com')
+    Base.metadata.create_all(engine)
 
 @app.get('/health')
 def health(): return {'status':'ok'}
@@ -92,10 +112,14 @@ def csrf(request: Request):
         origin=request.headers.get('origin')
         if not expected or not secrets.compare_digest(expected,supplied): raise HTTPException(403,'CSRF validation failed')
         if origin:
-            host=request.headers.get('x-forwarded-host') or request.headers.get('host','')
-            scheme=request.headers.get('x-forwarded-proto') or request.url.scheme
-            expected=f'{scheme}://{host}'.rstrip('/')
-            if not secrets.compare_digest(origin.rstrip('/'),expected): raise HTTPException(403,'Origin rejected')
+            if PUBLIC_BASE_URL:
+                expected_origin=_normalized_origin(PUBLIC_BASE_URL)
+            else:
+                host=(request.headers.get('x-forwarded-host') or request.headers.get('host','')).split(',')[0].strip()
+                scheme=(request.headers.get('x-forwarded-proto') or request.url.scheme).split(',')[0].strip()
+                expected_origin=_normalized_origin(f'{scheme}://{host}')
+            if not expected_origin or _normalized_origin(origin)!=expected_origin:
+                raise HTTPException(403,'Origin rejected. Check PUBLIC_BASE_URL or the proxy Host and X-Forwarded-Proto headers.')
 
 class Register(BaseModel): email: EmailStr; password: str=Field(min_length=8,max_length=200)
 class Login(BaseModel): email: EmailStr; password: str
@@ -133,7 +157,7 @@ def auth_status(request:Request,db:Session=Depends(get_db)):
 @app.get('/api/auth/csrf')
 def csrf_token(response:Response):
     token=secrets.token_urlsafe(32)
-    response.set_cookie('sillage_csrf',token,httponly=False,samesite='lax',secure=os.getenv('COOKIE_SECURE','false').lower()=='true',max_age=60*60*24)
+    response.set_cookie('sillage_csrf',token,httponly=False,samesite='lax',secure=_cookies_secure(),max_age=60*60*24)
     return {'ok':True}
 
 @app.post('/api/auth/register',dependencies=[Depends(csrf)])
@@ -146,9 +170,9 @@ def register(data:Register,response:Response,db:Session=Depends(get_db)):
 
 def set_session(response,user):
     token=secrets.token_urlsafe(32)
-    response.set_cookie(COOKIE,token,httponly=True,samesite='lax',secure=os.getenv('COOKIE_SECURE','false').lower()=='true',max_age=60*60*24*14)
-    response.set_cookie('sillage_uid',str(user.id),httponly=True,samesite='lax',secure=os.getenv('COOKIE_SECURE','false').lower()=='true',max_age=60*60*24*14)
-    response.set_cookie('sillage_csrf',token,httponly=False,samesite='lax',secure=os.getenv('COOKIE_SECURE','false').lower()=='true',max_age=60*60*24*14)
+    response.set_cookie(COOKIE,token,httponly=True,samesite='lax',secure=_cookies_secure(),max_age=60*60*24*14)
+    response.set_cookie('sillage_uid',str(user.id),httponly=True,samesite='lax',secure=_cookies_secure(),max_age=60*60*24*14)
+    response.set_cookie('sillage_csrf',token,httponly=False,samesite='lax',secure=_cookies_secure(),max_age=60*60*24*14)
 
 @app.post('/api/auth/login',dependencies=[Depends(csrf)])
 def login(data:Login,response:Response,db:Session=Depends(get_db)):

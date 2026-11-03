@@ -20,6 +20,27 @@ All containers use `restart: unless-stopped`. PostgreSQL health gates backend st
 
 For remote use, connect the VM and client devices to Tailscale or another private VPN. Keep service access private and avoid router port forwarding. Use the VPN's trusted HTTPS feature (for example, Tailscale Serve) where available. Alternatively, configure `SITE_ADDRESS` to a public domain you control and set `HTTP_PORT=80` and `HTTPS_PORT=443`, then route public DNS and certificate-validation traffic to Caddy; this is optional. Public ACME certificate issuance does not work for a private IP address alone. Restrict Caddy and host firewall exposure to the access method you select.
 
+## Existing Nginx HTTPS reverse proxy
+
+When Nginx terminates HTTPS and forwards to this stack's Caddy port, set `PUBLIC_BASE_URL` in `.env` to the exact browser origin, for example `https://sillage.example.com`. This makes CSRF origin checks compare against the public HTTPS origin even though the internal Nginx-to-Caddy hop uses HTTP. Session cookies automatically use the `Secure` flag for an HTTPS `PUBLIC_BASE_URL`. Keep `VITE_API_BASE_URL=/api` for a root-mounted, same-origin app; the browser calls `https://sillage.example.com/api/...` and Nginx forwards it with the rest of the request.
+
+Example Nginx location (replace the upstream address with the SillageAI VM):
+
+```nginx
+location / {
+    proxy_pass http://172.16.20.3:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Port $server_port;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Rebuild the frontend after changing `VITE_API_BASE_URL`, because Vite embeds it into the static bundle. For a non-root URL prefix, set it to the matching same-origin API path (for example `/sillage/api`) and configure Nginx to preserve or rewrite that prefix consistently. Avoid using a separate cross-origin API host unless CORS and cookie policy are deliberately configured for it.
+
 ## PostgreSQL backup and restore
 
 Take a logical database backup before upgrades and regularly on a schedule. The PostgreSQL service has no published host port, so execute `pg_dump` inside its container:
