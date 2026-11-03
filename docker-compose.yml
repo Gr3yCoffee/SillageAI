@@ -22,16 +22,40 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://sillage:${POSTGRES_PASSWORD}@postgres:5432/sillage}
+      PERFUMAPI_URL: http://perfumapi:9000
     volumes:
       - app_data:/app/data
     depends_on:
       postgres: { condition: service_healthy }
+      perfumapi: { condition: service_started }
     networks: [internal]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 20s
       timeout: 5s
       retries: 5
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+  perfumapi:
+    build: { context: ./perfumapi, target: runtime }
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-sillage}
+      POSTGRES_USER: ${POSTGRES_USER:-sillage}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PERFUMAPI_ADMIN_TOKEN: ${PERFUMAPI_ADMIN_TOKEN:?Set PERFUMAPI_ADMIN_TOKEN in .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+    volumes:
+      - perfumapi_data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     logging: { options: { max-size: "10m", max-file: "3" } }
 
   frontend:
@@ -57,6 +81,7 @@ services:
 volumes:
   postgres_data:
   app_data:
+  perfumapi_data:
   caddy_data:
   caddy_config:
 networks:

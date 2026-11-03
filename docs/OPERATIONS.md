@@ -50,3 +50,9 @@ Use the actual Compose project volume name if it differs. Also preserve `.env`, 
 Before an update, take a PostgreSQL dump and app-data copy. Pull or copy the reviewed application release, then run `docker compose up -d --build`; inspect health and logs. Keep a rollback copy of the previous release and compatible database backup. For VM failure, provision a replacement Debian VM, install Docker, restore project and `.env`, create the named volumes, restore PostgreSQL and app data, then start the stack and verify login, collection images, and health.
 
 Proxmox VM snapshots and scheduled VM backups are useful optional infrastructure protection. A snapshot while services are running is not a substitute for a database-consistent backup: use PostgreSQL logical backups (and quiesce writes where practical), particularly before database upgrades.
+
+## PerfumAPI fragrance catalog
+
+PerfumAPI runs as a private Compose service and stores its catalog in the existing PostgreSQL database. It has no published host port; the authenticated SillageAI backend proxies search requests from the Add fragrance form. The catalog starts empty, so lookup suggestions appear as entries are added to the catalog. Lookup failure leaves manual entry available. Search responses are cached in the backend for five minutes.
+
+Set a separate random `PERFUMAPI_ADMIN_TOKEN` in `.env` before starting the stack. The catalog ingestion routes require this token and are not exposed on the host. The upstream scraper targets Fragrantica and may be slow or unavailable. Its README says it is for educational/personal use and requires users to respect the source site's robots.txt and terms. Do not run bulk scraping by default; see `perfumapi/UPSTREAM.md` for provenance and local changes.

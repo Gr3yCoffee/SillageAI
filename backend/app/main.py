@@ -1,7 +1,8 @@
 import os, secrets, logging, time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, Request, Response, UploadFile, File
+from urllib.parse import quote
+from fastapi import FastAPI, Depends, HTTPException, Request, Response, UploadFile, File, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
@@ -12,10 +13,12 @@ from .db import Base, engine, SessionLocal
 from .models import User, Perfume, Profile, Usage, Feedback
 from .security import encrypt_secret, decrypt_secret
 from .ai import generate, get_catalog
+import httpx
 
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'))
 app=FastAPI(title='Sillage AI API',docs_url=None,redoc_url=None)
 _rate_buckets={}
+_catalog_cache={}
 @app.middleware('http')
 async def api_rate_limit(request:Request,call_next):
     if request.url.path.startswith('/api/') and request.method=='POST':
@@ -131,6 +134,33 @@ def me(user:User=Depends(current_user)): return {'id':user.id,'email':user.email
 def collection(user:User=Depends(current_user),db:Session=Depends(get_db)):
     rows=db.scalars(select(Perfume).where(Perfume.user_id==user.id).order_by(Perfume.name)).all()
     return [serialize_perfume(p) for p in rows]
+
+@app.get('/api/catalog/search')
+async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depends(current_user)):
+    query=' '.join(q.split())
+    cache_key=query.casefold()
+    cached=_catalog_cache.get(cache_key)
+    if cached and time.monotonic()-cached[0]<300: return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0,connect=2.0)) as client:
+            response=await client.get(f"{os.getenv('PERFUMAPI_URL','http://perfumapi:9000')}/perfumes/search/{quote(query,safe='')}",params={'limit':8})
+            response.raise_for_status()
+            rows=response.json()
+        if not isinstance(rows,list): raise ValueError('Invalid catalog response')
+        result=[]
+        for row in rows[:8]:
+            if not isinstance(row,dict) or not row.get('name'): continue
+            notes=[]
+            for field in ('notes_top','notes_middle','notes_base'):
+                value=row.get(field) or []
+                if isinstance(value,list): notes.extend(str(item)[:80] for item in value[:10] if item)
+            result.append({'name':str(row['name'])[:160],'brand':str(row.get('brand') or '')[:160],
+                'notes':notes[:30],'longevity':str(row.get('longevity') or ''),
+                'sillage':str(row.get('sillage') or ''),'image_url':row.get('image_url') if isinstance(row.get('image_url'),str) else None})
+        _catalog_cache[cache_key]=(time.monotonic(),result)
+        return result
+    except (httpx.HTTPError,ValueError):
+        raise HTTPException(503,'Fragrance catalog is unavailable right now. You can still add the fragrance manually.')
 
 def serialize_perfume(p):
     return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':p.image_path,'feedback_score':p.feedback_score}
