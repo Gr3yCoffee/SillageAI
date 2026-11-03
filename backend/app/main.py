@@ -19,6 +19,37 @@ logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'))
 app=FastAPI(title='Sillage AI API',docs_url=None,redoc_url=None)
 _rate_buckets={}
 _catalog_cache={}
+
+def _catalog_score(value,kind):
+    text=str(value or '').casefold()
+    if not text: return 3
+    if kind=='longevity':
+        if any(x in text for x in ('very weak','very short','poor')): return 1
+        if any(x in text for x in ('weak','short','soft')): return 2
+        if 'moderate' in text or 'average' in text: return 3
+        if any(x in text for x in ('very long','excellent','eternal')): return 5
+        if 'long' in text or 'good' in text: return 4
+    else:
+        if any(x in text for x in ('intimate','very weak','very soft')): return 1
+        if any(x in text for x in ('soft','weak','light')): return 2
+        if 'moderate' in text or 'average' in text: return 3
+        if any(x in text for x in ('enormous','very strong','beast')): return 5
+        if 'strong' in text or 'heavy' in text: return 4
+    return 3
+
+def _infer_family(notes):
+    groups={
+        'Woody':('cedar','sandalwood','vetiver','patchouli','oud','agarwood','oakmoss','cypress','guaiac','cashmere wood'),
+        'Floral':('rose','jasmine','tuberose','peony','iris','violet','ylang','lily','magnolia','orange blossom'),
+        'Citrus':('bergamot','lemon','grapefruit','orange','lime','mandarin','yuzu','citron'),
+        'Amber':('amber','vanilla','labdanum','benzoin','myrrh','resin','incense'),
+        'Aromatic':('lavender','sage','rosemary','basil','mint','thyme','fougere'),
+        'Gourmand':('chocolate','caramel','praline','coffee','cacao','honey','tonka','almond','sugar'),
+        'Spicy':('pepper','clove','nutmeg','saffron','ginger','cardamom','cinnamon'),
+        'Aquatic':('marine','sea water','aquatic','ozone','salt','water lily')}
+    text=' '.join(str(n).casefold() for n in notes)
+    ranked=sorted(((sum(text.count(term) for term in terms),name) for name,terms in groups.items()),reverse=True)
+    return ranked[0][1] if ranked and ranked[0][0] else ''
 @app.middleware('http')
 async def api_rate_limit(request:Request,call_next):
     if request.url.path.startswith('/api/') and request.method=='POST':
@@ -71,6 +102,9 @@ class Login(BaseModel): email: EmailStr; password: str
 class PerfumeIn(BaseModel):
     name: str=Field(min_length=1,max_length=160); brand: str=Field(default='',max_length=160); family: str=Field(default='',max_length=100)
     notes: list[str]=Field(default_factory=list,max_length=30); longevity: int=Field(default=3,ge=1,le=5); projection: int=Field(default=3,ge=1,le=5); season: list[str]=Field(default_factory=list,max_length=8)
+    release_year: int|None=Field(default=None,ge=1000,le=2200); gender: str=Field(default='',max_length=40); concentration: str=Field(default='',max_length=80)
+    secondary_family: str=Field(default='',max_length=100); character: str=Field(default='',max_length=500)
+    description: str=Field(default='',max_length=2000); source_url: str=Field(default='',max_length=500); wear_times: list[str]=Field(default_factory=list,max_length=8)
 class PrefsIn(BaseModel): preferences: dict
 class SettingsIn(BaseModel):
     mode: str=Field(default='free',pattern='^(free|economy|smart)$')
@@ -143,27 +177,39 @@ async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depen
     if cached and time.monotonic()-cached[0]<300: return cached[1]
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0,connect=2.0)) as client:
-            response=await client.get(f"{os.getenv('PERFUMAPI_URL','http://perfumapi:9000')}/perfumes/search/{quote(query,safe='')}",params={'limit':8})
+            response=await client.get(f"{os.getenv('PERFUMAPI_URL','http://perfumapi:9000')}/perfumes/search/{quote(query,safe='')}",params={'limit':20})
             response.raise_for_status()
             rows=response.json()
         if not isinstance(rows,list): raise ValueError('Invalid catalog response')
         result=[]
-        for row in rows[:8]:
+        for row in rows[:20]:
             if not isinstance(row,dict) or not row.get('name'): continue
             notes=[]
             for field in ('notes_top','notes_middle','notes_base'):
                 value=row.get(field) or []
                 if isinstance(value,list): notes.extend(str(item)[:80] for item in value[:10] if item)
+            longevity_label=str(row.get('longevity') or '')
+            projection_label=str(row.get('sillage') or '')
             result.append({'name':str(row['name'])[:160],'brand':str(row.get('brand') or '')[:160],
-                'notes':notes[:30],'longevity':str(row.get('longevity') or ''),
-                'sillage':str(row.get('sillage') or ''),'image_url':row.get('image_url') if isinstance(row.get('image_url'),str) else None})
+                'family':str(row.get('family') or _infer_family(notes))[:100],
+                'secondary_family':str(row.get('secondary_family') or '')[:100],
+                'character':str(row.get('character') or '')[:500],'notes':notes[:30],
+                'longevity':_catalog_score(longevity_label,'longevity'),
+                'projection':_catalog_score(projection_label,'projection'),
+                'longevity_label':longevity_label,'projection_label':projection_label,
+                'gender':str(row.get('gender') or ''),'release_year':row.get('release_year'),
+                'concentration':str(row.get('concentration') or '')[:80],
+                'description':str(row.get('description') or '')[:2000],
+                'season':row.get('seasons') if isinstance(row.get('seasons'),list) else [],
+                'wear_times':row.get('times_of_day') if isinstance(row.get('times_of_day'),list) else [],
+                'source_url':str(row.get('perfume_url') or '')[:500]})
         _catalog_cache[cache_key]=(time.monotonic(),result)
         return result
     except (httpx.HTTPError,ValueError):
         raise HTTPException(503,'Fragrance catalog is unavailable right now. You can still add the fragrance manually.')
 
 def serialize_perfume(p):
-    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':p.image_path,'feedback_score':p.feedback_score}
+    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':p.image_path,'feedback_score':p.feedback_score,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or []}
 
 @app.post('/api/collection',dependencies=[Depends(csrf)])
 def add_perfume(data:PerfumeIn,user:User=Depends(current_user),db:Session=Depends(get_db)):

@@ -25,7 +25,8 @@ from utils.db import (
     get_all_perfumes,
     get_perfume_by_id,
     search_perfumes,
-    get_perfume_count
+    get_perfume_count,
+    seed_open_dataset
 )
 from utils.auth import get_current_user, verify_admin, require_scraping_permission
 from scraper.scrape import (
@@ -73,6 +74,13 @@ class PerfumeBase(BaseModel):
     brand: Optional[str] = None
     release_year: Optional[int] = None
     gender: Optional[str] = None
+    family: Optional[str] = None
+    secondary_family: Optional[str] = None
+    concentration: Optional[str] = None
+    character: Optional[str] = None
+    popularity_rank: Optional[int] = None
+    seasons: List[str] = Field(default_factory=list)
+    times_of_day: List[str] = Field(default_factory=list)
     notes_top: List[str] = Field(default_factory=list)
     notes_middle: List[str] = Field(default_factory=list)
     notes_base: List[str] = Field(default_factory=list)
@@ -144,6 +152,8 @@ async def startup_event():
     """Run database migration on startup"""
     print("🚀 Starting Perfume API...")
     await run_migration()
+    seeded_count=await seed_open_dataset()
+    if seeded_count: print(f"✅ Loaded {seeded_count} Scento CC BY 4.0 catalog records")
     print("✅ API ready!")
 
 

@@ -12,6 +12,7 @@ COPY --chown=catalog:catalog api ./api
 COPY --chown=catalog:catalog scraper ./scraper
 COPY --chown=catalog:catalog utils ./utils
 COPY --chown=catalog:catalog data ./data
+COPY --chown=catalog:catalog assets ./assets
 USER catalog
 EXPOSE 9000
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "9000", "--workers", "1"]
