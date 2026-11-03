@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sillage}
+      POSTGRES_USER: ${POSTGRES_USER:-sillage}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+  backend:
+    build: { context: ./backend, target: runtime }
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://sillage:${POSTGRES_PASSWORD}@postgres:5432/sillage}
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+  frontend:
+    build: { context: ./frontend }
+    restart: unless-stopped
+    networks: [internal]
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [frontend, backend]
+    networks: [internal]
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+volumes:
+  postgres_data:
+  app_data:
+  caddy_data:
+  caddy_config:
+networks:
+  internal:
+    driver: bridge
