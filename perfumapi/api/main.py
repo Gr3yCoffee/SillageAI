@@ -533,7 +533,7 @@ async def get_stats():
         return {
             "total_perfumes": total_perfumes,
             "database": "PostgreSQL",
-            "source": "Fragrantica.com"
+            "source": "Scento open dataset (CC BY 4.0)"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")

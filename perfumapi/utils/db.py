@@ -50,6 +50,7 @@ async def seed_open_dataset() -> int:
                 'notes_top':split(row.get('top_notes')), 'notes_middle':split(row.get('heart_notes')),
                 'notes_base':split(row.get('base_notes')), 'description':row.get('description') or '',
                 'perfume_url':row.get('url') or None})
+    records=list({record['perfume_url']:record for record in records if record['perfume_url']}.values())
     with _connect() as conn:
         existing=conn.execute("SELECT count(*) AS n FROM perfum_catalog WHERE perfume_url LIKE 'https://www.scento.com/perfumes/%'").fetchone()['n']
     if existing==len(records): return 0
@@ -86,7 +87,7 @@ async def get_perfume_by_id(perfume_id: str):
 async def search_perfumes(query: str, limit: int=50):
     term=f"%{query}%"
     with _connect() as conn:
-        return list(conn.execute('SELECT * FROM perfum_catalog WHERE name ILIKE %s OR brand ILIKE %s ORDER BY CASE WHEN name ILIKE %s THEN 0 ELSE 1 END, popularity_rank NULLS LAST, name LIMIT %s',(term,term,f'{query}%',limit)).fetchall())
+        return list(conn.execute('SELECT * FROM perfum_catalog WHERE name ILIKE %s OR brand ILIKE %s ORDER BY CASE WHEN brand ILIKE %s THEN 0 WHEN name ILIKE %s THEN 1 ELSE 2 END, popularity_rank NULLS LAST, name LIMIT %s',(term,term,term,f'{query}%',limit)).fetchall())
 
 async def get_perfume_count() -> int:
     with _connect() as conn: return conn.execute('SELECT count(*) AS n FROM perfum_catalog').fetchone()['n']
