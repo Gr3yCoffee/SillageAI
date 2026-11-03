@@ -27,7 +27,7 @@ from utils.db import (
     search_perfumes,
     get_perfume_count
 )
-from utils.auth import get_current_user, verify_admin
+from utils.auth import get_current_user, verify_admin, require_scraping_permission
 from scraper.scrape import (
     scrape_fragrantica,
     scrape_fragrantica_by_brand,
@@ -269,7 +269,7 @@ async def create_perfume(
         raise HTTPException(status_code=500, detail=f"Error creating perfume: {str(e)}")
 
 
-@app.post("/scrape", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"])
+@app.post("/scrape", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"], dependencies=[Depends(require_scraping_permission)])
 async def scrape_perfumes(
     scrape_request: ScrapeRequest,
     current_user: Dict[str, Any] = Depends(verify_admin)
@@ -323,7 +323,7 @@ async def scrape_perfumes(
         )
 
 
-@app.post("/scrape/brand", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"])
+@app.post("/scrape/brand", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"], dependencies=[Depends(require_scraping_permission)])
 async def scrape_brand(
     scrape_request: ScrapeBrandRequest,
     current_user: Dict[str, Any] = Depends(verify_admin)
@@ -379,7 +379,7 @@ async def scrape_brand(
         )
 
 
-@app.post("/scrape/brands", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"])
+@app.post("/scrape/brands", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"], dependencies=[Depends(require_scraping_permission)])
 async def scrape_multiple_brands(
     scrape_request: ScrapeBrandsRequest,
     current_user: Dict[str, Any] = Depends(verify_admin)
@@ -446,7 +446,7 @@ async def scrape_multiple_brands(
         )
 
 
-@app.post("/scrape/url", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"])
+@app.post("/scrape/url", response_model=ScrapeResponse, tags=["Scraper (Auth Required)"], dependencies=[Depends(require_scraping_permission)])
 async def scrape_by_url(
     scrape_request: ScrapeUrlRequest,
     current_user: Dict[str, Any] = Depends(verify_admin)

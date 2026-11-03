@@ -12,4 +12,8 @@ async def verify_admin(authorization: str | None = Header(default=None)):
         raise HTTPException(401,'Invalid service credentials')
     return {'id':'sillage-backend'}
 
+async def require_scraping_permission():
+    if os.getenv('PERFUMAPI_SCRAPING_ENABLED','false').lower()!='true':
+        raise HTTPException(403,'Scraping is disabled. Enable it only with written authorization from the source site.')
+
 get_current_user=verify_admin

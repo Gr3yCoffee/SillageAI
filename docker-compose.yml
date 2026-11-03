@@ -45,6 +45,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-sillage}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       PERFUMAPI_ADMIN_TOKEN: ${PERFUMAPI_ADMIN_TOKEN:?Set PERFUMAPI_ADMIN_TOKEN in .env}
+      PERFUMAPI_SCRAPING_ENABLED: ${PERFUMAPI_SCRAPING_ENABLED:-false}
     depends_on:
       postgres: { condition: service_healthy }
     networks: [internal]
