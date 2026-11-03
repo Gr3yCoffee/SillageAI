@@ -63,7 +63,7 @@ def csrf(request: Request):
             expected=f'{scheme}://{host}'.rstrip('/')
             if not secrets.compare_digest(origin.rstrip('/'),expected): raise HTTPException(403,'Origin rejected')
 
-class Register(BaseModel): email: EmailStr; password: str=Field(min_length=12,max_length=200)
+class Register(BaseModel): email: EmailStr; password: str=Field(min_length=8,max_length=200)
 class Login(BaseModel): email: EmailStr; password: str
 class PerfumeIn(BaseModel):
     name: str=Field(min_length=1,max_length=160); brand: str=Field(default='',max_length=160); family: str=Field(default='',max_length=100)
