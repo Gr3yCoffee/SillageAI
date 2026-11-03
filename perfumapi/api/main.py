@@ -5,12 +5,15 @@ Serves scraped perfume data from Supabase with authentication.
 
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 import os
 import sys
 import asyncio
+from datetime import datetime
+from uuid import UUID
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -89,8 +92,8 @@ class PerfumeCreate(PerfumeBase):
 
 class PerfumeResponse(PerfumeBase):
     """Model for perfume response"""
-    id: str
-    created_at: Optional[str] = None
+    id: UUID
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -519,7 +522,7 @@ async def get_stats():
         
         return {
             "total_perfumes": total_perfumes,
-            "database": "Supabase PostgreSQL",
+            "database": "PostgreSQL",
             "source": "Fragrantica.com"
         }
     except Exception as e:
@@ -530,21 +533,21 @@ async def get_stats():
 @app.exception_handler(404)
 async def not_found_handler(request, exc):
     """Custom 404 handler"""
-    return {
+    return JSONResponse(status_code=404, content={
         "error": "Not Found",
         "message": "The requested resource was not found",
         "path": str(request.url)
-    }
+    })
 
 
 @app.exception_handler(500)
 async def internal_error_handler(request, exc):
     """Custom 500 handler"""
-    return {
+    return JSONResponse(status_code=500, content={
         "error": "Internal Server Error",
         "message": "An unexpected error occurred",
         "path": str(request.url)
-    }
+    })
 
 
 if __name__ == "__main__":
