@@ -1,4 +1,4 @@
-import os, secrets, logging, time, asyncio
+import os, secrets, logging, time, asyncio, json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -129,6 +129,7 @@ class PerfumeIn(BaseModel):
     secondary_family: str=Field(default='',max_length=100); character: str=Field(default='',max_length=500)
     description: str=Field(default='',max_length=2000); source_url: str=Field(default='',max_length=500); wear_times: list[str]=Field(default_factory=list,max_length=8)
     catalog_image_url: str|None=Field(default=None,max_length=1000)
+    catalog_metadata: dict=Field(default_factory=dict)
 class PrefsIn(BaseModel): preferences: dict
 class SettingsIn(BaseModel):
     mode: str=Field(default='free',pattern='^(free|economy|smart)$')
@@ -237,7 +238,20 @@ def _normalize_fragella(row):
         'gender':str(row.get('Gender') or '')[:40],'release_year':int(row['Year']) if str(row.get('Year','')).isdigit() else None,
         'concentration':str(row.get('OilType') or '')[:80],
         'description':'','season':_fragella_seasons(row),'wear_times':wear_times,
-        'source_url':'https://api.fragella.com/','image_url':image_url}
+        'source_url':'https://api.fragella.com/','image_url':image_url,
+        'catalog_metadata':{'provider_id':str(row.get('_id') or '')[:200],
+            'perfumers':str(row.get('perfumers') or '')[:300],
+            'country':str(row.get('Country') or '')[:100],
+            'community_rating':row.get('rating'),'confidence':str(row.get('Confidence') or '')[:40],
+            'popularity':str(row.get('Popularity') or '')[:60],
+            'price_value':str(row.get('Price Value') or '')[:60],
+            'price':str(row.get('Price') or '')[:40],
+            'accords':accords[:20] if isinstance(accords,list) else [],
+            'accord_strength':row.get('Main Accords Percentage') if isinstance(row.get('Main Accords Percentage'),dict) else {},
+            'season_ranking':row.get('Season Ranking') if isinstance(row.get('Season Ranking'),list) else [],
+            'occasion_ranking':row.get('Occasion Ranking') if isinstance(row.get('Occasion Ranking'),list) else [],
+            'general_notes':row.get('General Notes') if isinstance(row.get('General Notes'),list) else [],
+            'purchase_url':str(row.get('Purchase URL') or '')[:1000]}}
 
 @app.get('/api/catalog/search')
 async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -283,7 +297,7 @@ async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depen
             raise HTTPException(503,'Fragella search is unavailable right now. You can still add the fragrance manually.')
 
 def serialize_perfume(p):
-    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':f'/api/collection/{p.id}/image' if p.image_path else None,'feedback_score':p.feedback_score,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or []}
+    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':f'/api/collection/{p.id}/image' if p.image_path else None,'feedback_score':p.feedback_score,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or [],'catalog_metadata':p.catalog_metadata or {}}
 
 async def _save_fragella_image(url:str|None)->str|None:
     if not url: return None
@@ -312,6 +326,8 @@ async def _save_fragella_image(url:str|None)->str|None:
 @app.post('/api/collection',dependencies=[Depends(csrf)])
 async def add_perfume(data:PerfumeIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     values=data.model_dump(); image_url=values.pop('catalog_image_url',None)
+    if len(json.dumps(values.get('catalog_metadata') or {},ensure_ascii=False))>20000:
+        raise HTTPException(422,'Catalog details exceed the allowed size.')
     duplicate=db.scalar(select(Perfume).where(Perfume.user_id==user.id,func.lower(Perfume.name)==data.name.casefold(),func.lower(Perfume.brand)==data.brand.casefold()))
     if duplicate: raise HTTPException(409,'This fragrance is already in your collection.')
     image_name=await _save_fragella_image(image_url)
