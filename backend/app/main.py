@@ -1,7 +1,7 @@
-import os, secrets, logging, time
+import os, secrets, logging, time, asyncio
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, UploadFile, File, Query
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from pwdlib import PasswordHash
 from .db import Base, engine, SessionLocal
-from .models import User, Perfume, Profile, Usage, Feedback
+from .models import User, Perfume, Profile, Usage, Feedback, FragellaUsage
 from .security import encrypt_secret, decrypt_secret
 from .ai import generate, get_catalog
 import httpx
@@ -17,11 +17,12 @@ import httpx
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'))
 app=FastAPI(title='Sillage AI API',docs_url=None,redoc_url=None)
 _rate_buckets={}
-_catalog_cache={}
+_fragella_cache={}
+_fragella_lock=asyncio.Lock()
 
 def _catalog_score(value,kind):
     text=str(value or '').casefold()
-    if not text: return 3
+    if not text: return None
     if kind=='longevity':
         if any(x in text for x in ('very weak','very short','poor')): return 1
         if any(x in text for x in ('weak','short','soft')): return 2
@@ -34,7 +35,7 @@ def _catalog_score(value,kind):
         if 'moderate' in text or 'average' in text: return 3
         if any(x in text for x in ('enormous','very strong','beast')): return 5
         if 'strong' in text or 'heavy' in text: return 4
-    return 3
+    return None
 
 def _infer_family(notes):
     groups={
@@ -123,10 +124,11 @@ class Register(BaseModel): email: EmailStr; password: str=Field(min_length=8,max
 class Login(BaseModel): email: EmailStr; password: str
 class PerfumeIn(BaseModel):
     name: str=Field(min_length=1,max_length=160); brand: str=Field(default='',max_length=160); family: str=Field(default='',max_length=100)
-    notes: list[str]=Field(default_factory=list,max_length=30); longevity: int=Field(default=3,ge=1,le=5); projection: int=Field(default=3,ge=1,le=5); season: list[str]=Field(default_factory=list,max_length=8)
+    notes: list[str]=Field(default_factory=list,max_length=30); longevity: int|None=Field(default=None,ge=1,le=5); projection: int|None=Field(default=None,ge=1,le=5); season: list[str]=Field(default_factory=list,max_length=8)
     release_year: int|None=Field(default=None,ge=1000,le=2200); gender: str=Field(default='',max_length=40); concentration: str=Field(default='',max_length=80)
     secondary_family: str=Field(default='',max_length=100); character: str=Field(default='',max_length=500)
     description: str=Field(default='',max_length=2000); source_url: str=Field(default='',max_length=500); wear_times: list[str]=Field(default_factory=list,max_length=8)
+    catalog_image_url: str|None=Field(default=None,max_length=1000)
 class PrefsIn(BaseModel): preferences: dict
 class SettingsIn(BaseModel):
     mode: str=Field(default='free',pattern='^(free|economy|smart)$')
@@ -191,57 +193,135 @@ def collection(user:User=Depends(current_user),db:Session=Depends(get_db)):
     rows=db.scalars(select(Perfume).where(Perfume.user_id==user.id).order_by(Perfume.name)).all()
     return [serialize_perfume(p) for p in rows]
 
+def _fragella_notes(row):
+    notes=row.get('Notes') or {}
+    result=[]
+    if isinstance(notes,dict):
+        for tier in ('Top','Middle','Base'):
+            values=notes.get(tier) or notes.get(tier.lower()) or []
+            if isinstance(values,list):
+                result.extend((str(item.get('name') or '') if isinstance(item,dict) else str(item))[:80] for item in values)
+    if not result:
+        values=row.get('General Notes') or []
+        if isinstance(values,list): result=[str(v)[:80] for v in values if v]
+    return list(dict.fromkeys(x for x in result if x))[:30]
+
+def _fragella_seasons(row):
+    values=row.get('Season Ranking') or []
+    if isinstance(values,list):
+        def score(item):
+            try: return float(item.get('score',item.get('value',0)))
+            except (AttributeError,TypeError,ValueError): return 0
+        return [str(x.get('name')) for x in sorted((x for x in values if isinstance(x,dict) and x.get('name')),key=score,reverse=True)[:4]]
+    return []
+
+def _normalize_fragella(row):
+    if not isinstance(row,dict) or not row.get('Name'): return None
+    notes=_fragella_notes(row)
+    accords=row.get('Main Accords') or []
+    family=str(accords[0] if isinstance(accords,list) and accords else '')
+    longevity_label=str(row.get('Longevity') or '')
+    projection_label=str(row.get('Sillage') or '')
+    image_url=str(row.get('Image URL Transparent') or row.get('Image URL') or '')
+    occasions=row.get('Occasion Ranking') or []
+    wear_times=[]
+    if isinstance(occasions,list):
+        wear_times=[str(x['name']) for x in occasions if isinstance(x,dict) and x.get('name')][:4]
+    return {'provider_id':str(row.get('_id') or '')[:200],
+        'name':str(row['Name'])[:160],'brand':str(row.get('Brand') or '')[:160],
+        'family':family[:100] or _infer_family(notes),'secondary_family':'',
+        'character':('Main accords: '+', '.join(str(x) for x in accords[:6]))[:500] if isinstance(accords,list) else '',
+        'notes':notes,'longevity':_catalog_score(longevity_label,'longevity'),
+        'projection':_catalog_score(projection_label,'projection'),
+        'longevity_label':longevity_label,'projection_label':projection_label,
+        'gender':str(row.get('Gender') or '')[:40],'release_year':int(row['Year']) if str(row.get('Year','')).isdigit() else None,
+        'concentration':str(row.get('OilType') or '')[:80],
+        'description':'','season':_fragella_seasons(row),'wear_times':wear_times,
+        'source_url':'https://api.fragella.com/','image_url':image_url}
+
 @app.get('/api/catalog/search')
-async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depends(current_user)):
+async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depends(current_user),db:Session=Depends(get_db)):
     query=' '.join(q.split())
+    # Reuse saved collection data first. Existing fragrances cost no Fragella requests.
+    perfumes=db.scalars(select(Perfume).where(Perfume.user_id==user.id).order_by(Perfume.name)).all()
+    local=[p for p in perfumes if query.casefold() in f'{p.brand} {p.name}'.casefold()][:10]
+    if local:
+        rows=[]
+        for p in local:
+            item=serialize_perfume(p)
+            item.update({'longevity_label':'','projection_label':'','image_url':'','in_collection':True})
+            rows.append(item)
+        return rows
+    key=os.getenv('FRAGELLA_API_KEY','').strip()
+    if not key: raise HTTPException(503,'Fragella API key is not configured on the server. You can still add the fragrance manually.')
     cache_key=query.casefold()
-    cached=_catalog_cache.get(cache_key)
-    if cached and time.monotonic()-cached[0]<300: return cached[1]
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0,connect=2.0)) as client:
-            response=await client.get(f"{os.getenv('PERFUMAPI_URL','http://perfumapi:9000')}/perfumes/search/{quote(query,safe='')}",params={'limit':20})
-            response.raise_for_status()
-            rows=response.json()
-        if not isinstance(rows,list): raise ValueError('Invalid catalog response')
-        result=[]
-        for row in rows[:20]:
-            if not isinstance(row,dict) or not row.get('name'): continue
-            notes=[]
-            for field in ('notes_top','notes_middle','notes_base'):
-                value=row.get(field) or []
-                if isinstance(value,list): notes.extend(str(item)[:80] for item in value[:10] if item)
-            longevity_label=str(row.get('longevity') or '')
-            projection_label=str(row.get('sillage') or '')
-            result.append({'name':str(row['name'])[:160],'brand':str(row.get('brand') or '')[:160],
-                'family':str(row.get('family') or _infer_family(notes))[:100],
-                'secondary_family':str(row.get('secondary_family') or '')[:100],
-                'character':str(row.get('character') or '')[:500],'notes':notes[:30],
-                'longevity':_catalog_score(longevity_label,'longevity'),
-                'projection':_catalog_score(projection_label,'projection'),
-                'longevity_label':longevity_label,'projection_label':projection_label,
-                'gender':str(row.get('gender') or ''),'release_year':row.get('release_year'),
-                'concentration':str(row.get('concentration') or '')[:80],
-                'description':str(row.get('description') or '')[:2000],
-                'season':row.get('seasons') if isinstance(row.get('seasons'),list) else [],
-                'wear_times':row.get('times_of_day') if isinstance(row.get('times_of_day'),list) else [],
-                'source_url':str(row.get('perfume_url') or '')[:500]})
-        _catalog_cache[cache_key]=(time.monotonic(),result)
-        return result
-    except (httpx.HTTPError,ValueError):
-        raise HTTPException(503,'Fragrance catalog is unavailable right now. You can still add the fragrance manually.')
+    cached=_fragella_cache.get(cache_key)
+    if cached and time.monotonic()-cached[0]<3600: return cached[1]
+    async with _fragella_lock:
+        cached=_fragella_cache.get(cache_key)
+        if cached and time.monotonic()-cached[0]<3600: return cached[1]
+        now=datetime.now(timezone.utc); window_start=now-timedelta(days=30)
+        requests_used=db.scalar(select(func.count(FragellaUsage.id)).where(FragellaUsage.requested_at>=window_start)) or 0
+        if requests_used>=20:
+            raise HTTPException(429,'Fragella request limit reached (20 searches per rolling 30 days). Saved fragrances and manual entry still work.')
+        db.add(FragellaUsage(requested_at=now)); db.commit()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(12.0,connect=3.0),follow_redirects=False) as client:
+                response=await client.get('https://api.fragella.com/api/v1/fragrances',params={'search':query,'limit':10},headers={'x-api-key':key})
+                if response.status_code==401: raise HTTPException(503,'Fragella rejected the API key. Check FRAGELLA_API_KEY on the server.')
+                if response.status_code==429: raise HTTPException(429,'Fragella rate limit reached. Try again later.')
+                response.raise_for_status()
+                payload=response.json()
+            raw=payload.get('data',[]) if isinstance(payload,dict) else payload
+            if not isinstance(raw,list): raise ValueError('Unexpected Fragella response')
+            result=[item for item in (_normalize_fragella(row) for row in raw[:10]) if item]
+            _fragella_cache[cache_key]=(time.monotonic(),result)
+            return result
+        except HTTPException: raise
+        except (httpx.HTTPError,ValueError,TypeError) as exc:
+            logging.warning('Fragella catalog request failed type=%s',type(exc).__name__)
+            raise HTTPException(503,'Fragella search is unavailable right now. You can still add the fragrance manually.')
 
 def serialize_perfume(p):
     return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':f'/api/collection/{p.id}/image' if p.image_path else None,'feedback_score':p.feedback_score,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or []}
 
+async def _save_fragella_image(url:str|None)->str|None:
+    if not url: return None
+    try:
+        parts=urlsplit(url)
+        if parts.scheme!='https' or parts.hostname!='cdn.fragella.com' or parts.username or parts.password or parts.port not in (None,443): return None
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0,connect=3.0),follow_redirects=False) as client:
+            async with client.stream('GET',url) as response:
+                response.raise_for_status()
+                if int(response.headers.get('content-length','0') or 0)>5*1024*1024: return None
+                mime=response.headers.get('content-type','').split(';')[0].lower()
+                chunks=[]; size=0
+                async for chunk in response.aiter_bytes():
+                    size+=len(chunk)
+                    if size>5*1024*1024: return None
+                    chunks.append(chunk)
+            suffix={'image/jpeg':'jpg','image/png':'png','image/webp':'webp'}.get(mime)
+            if not suffix: return None
+            name=secrets.token_hex(16)+'.'+suffix
+            (UPLOAD_DIR/name).write_bytes(b''.join(chunks))
+            return name
+    except (httpx.HTTPError,ValueError,OSError):
+        logging.info('Fragella bottle image unavailable')
+        return None
+
 @app.post('/api/collection',dependencies=[Depends(csrf)])
-def add_perfume(data:PerfumeIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    p=Perfume(user_id=user.id,**data.model_dump()); db.add(p); user.preference_revision+=1; db.commit(); db.refresh(p); return serialize_perfume(p)
+async def add_perfume(data:PerfumeIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    values=data.model_dump(); image_url=values.pop('catalog_image_url',None)
+    duplicate=db.scalar(select(Perfume).where(Perfume.user_id==user.id,func.lower(Perfume.name)==data.name.casefold(),func.lower(Perfume.brand)==data.brand.casefold()))
+    if duplicate: raise HTTPException(409,'This fragrance is already in your collection.')
+    image_name=await _save_fragella_image(image_url)
+    p=Perfume(user_id=user.id,image_path=image_name,**values); db.add(p); user.preference_revision+=1; db.commit(); db.refresh(p); return serialize_perfume(p)
 
 @app.put('/api/collection/{perfume_id}',dependencies=[Depends(csrf)])
 def update_perfume(perfume_id:int,data:PerfumeIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     p=db.scalar(select(Perfume).where(Perfume.id==perfume_id,Perfume.user_id==user.id))
     if not p: raise HTTPException(404,'Fragrance not found')
-    for k,v in data.model_dump().items(): setattr(p,k,v)
+    for k,v in data.model_dump(exclude={'catalog_image_url'}).items(): setattr(p,k,v)
     user.preference_revision+=1; db.commit(); return serialize_perfume(p)
 
 @app.delete('/api/collection/{perfume_id}',dependencies=[Depends(csrf)])

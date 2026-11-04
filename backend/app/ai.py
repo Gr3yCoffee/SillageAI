@@ -61,15 +61,17 @@ def deterministic_rank(items: list[Perfume], context: dict, preferences: dict) -
     ranked=[]
     for p in items:
         score = 0.0
+        projection=p.projection if p.projection is not None else 3
+        longevity=p.longevity if p.longevity is not None else 3
         fam=(p.family or '').lower(); notes=[str(n).lower() for n in (p.notes or [])]
         if preferred and fam in preferred: score += 2.2
         if any(n in avoid for n in notes): score -= 4
         if temp is not None:
             score += 1 if float(temp) >= 25 and any(x in fam for x in ('citrus','fresh','aquatic')) else 0
             score += 1 if float(temp) < 15 and any(x in fam for x in ('amber','woody','spicy','oriental')) else 0
-        if humidity is not None and float(humidity)>70 and p.projection>=4: score -= .6
-        if any(x in occasion for x in ('office','work','day')): score += max(0, 4-p.projection)*.25
-        if any(x in occasion for x in ('evening','date','party')): score += p.projection*.22 + p.longevity*.18
+        if humidity is not None and float(humidity)>70 and projection>=4: score -= .6
+        if any(x in occasion for x in ('office','work','day')): score += max(0, 4-projection)*.25
+        if any(x in occasion for x in ('evening','date','party')): score += projection*.22 + longevity*.18
         if weather in ('rain','cold') and any(x in fam for x in ('woody','amber','spicy')): score += .35
         score += min(1.0, max(-1.0, p.feedback_score))*.7
         score += float((preferences.get('perfume_scores') or {}).get(str(p.id), 0))*.3

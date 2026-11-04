@@ -24,8 +24,8 @@ class Perfume(Base):
     secondary_family: Mapped[str] = mapped_column(String(100), default='')
     character: Mapped[str] = mapped_column(String(500), default='')
     notes: Mapped[list] = mapped_column(JSON, default=list)
-    longevity: Mapped[int] = mapped_column(Integer, default=3)
-    projection: Mapped[int] = mapped_column(Integer, default=3)
+    longevity: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    projection: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     season: Mapped[list] = mapped_column(JSON, default=list)
     release_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gender: Mapped[str] = mapped_column(String(40), default='')
@@ -72,3 +72,8 @@ class Feedback(Base):
     score: Mapped[int] = mapped_column(Integer)
     note: Mapped[str] = mapped_column(String(500), default='')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+class FragellaUsage(Base):
+    __tablename__ = 'fragella_usage'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)

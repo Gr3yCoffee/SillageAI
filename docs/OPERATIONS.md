@@ -74,6 +74,12 @@ Proxmox VM snapshots and scheduled VM backups are useful optional infrastructure
 
 ## PerfumAPI fragrance catalog
 
-PerfumAPI runs as a private Compose service and stores its catalog in the existing PostgreSQL database. It has no published host port; the authenticated SillageAI backend proxies search requests from the Add fragrance form. Its catalog is seeded from the bundled Scento dataset at startup. Lookup failure leaves manual entry available. Search responses are cached in the backend for five minutes.
+PerfumAPI runs as a private Compose service and stores its catalog in the existing PostgreSQL database. It has no published host port; the authenticated SillageAI backend proxies search requests from the Add fragrance form. Its database is seeded from the bundled Scento dataset. Current fragrance search uses Fragella; the PerfumAPI service remains internal for catalog storage and its original scraper routes remain disabled.
 
 Set a separate random `PERFUMAPI_ADMIN_TOKEN` in `.env` before starting the stack. The catalog ingestion routes require this token and are not exposed on the host. The bundled Scento dataset contains 1,473 distinct fragrances from 1,479 CC BY 4.0 rows; see `perfumapi/assets/ATTRIBUTION.md` for required credit. Longevity and projection are not included, so Sillage uses its neutral defaults. PerfumAPI's Fragrantica scraping routes stay disabled unless `PERFUMAPI_SCRAPING_ENABLED=true`; Fragrantica's terms require written authorization for automated scraping. See `perfumapi/UPSTREAM.md` for details.
+
+## Fragella fragrance lookup
+
+Add the Fragella API key to the server's ignored `.env` file as `FRAGELLA_API_KEY`. The backend keeps this credential server-side. In My Collection, catalog requests run only when the user presses **Search Fragella**; typing does not consume requests. The backend enforces a conservative 20-request rolling 30-day cap and reuses results in memory for one hour. Searches matching fragrances already saved to that user's collection are served locally.
+
+When a user adds a Fragella result, Sillage stores its selected name, house, note list, accord family, available season and occasion metadata, and performance labels in PostgreSQL. If Fragella supplies a bottle image, the backend downloads it from Fragella's CDN to the persistent `app_data` volume and serves it through the authenticated collection image route. Failed image downloads do not block saving the fragrance; the user can upload a photo instead. Missing longevity or projection stays unknown rather than being shown as a default 3/5. Catalog entries are user-selected rather than bulk imported; Fragella's terms restrict caching large portions of its API dataset.
