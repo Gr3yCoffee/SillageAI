@@ -3,8 +3,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, UploadFile, File, Query
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -61,7 +60,6 @@ async def api_rate_limit(request:Request,call_next):
 DATA_DIR=Path(os.getenv('APP_DATA_DIR','/app/data'))
 UPLOAD_DIR=DATA_DIR/'uploads'
 UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
-app.mount('/uploads',StaticFiles(directory=str(UPLOAD_DIR)),name='uploads')
 password_hash=PasswordHash.recommended()
 COOKIE=os.getenv('SESSION_COOKIE','sillage_session')
 PUBLIC_BASE_URL=os.getenv('PUBLIC_BASE_URL','').strip()
@@ -233,7 +231,7 @@ async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depen
         raise HTTPException(503,'Fragrance catalog is unavailable right now. You can still add the fragrance manually.')
 
 def serialize_perfume(p):
-    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':p.image_path,'feedback_score':p.feedback_score,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or []}
+    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':f'/api/collection/{p.id}/image' if p.image_path else None,'feedback_score':p.feedback_score,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or []}
 
 @app.post('/api/collection',dependencies=[Depends(csrf)])
 def add_perfume(data:PerfumeIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -250,7 +248,10 @@ def update_perfume(perfume_id:int,data:PerfumeIn,user:User=Depends(current_user)
 def delete_perfume(perfume_id:int,user:User=Depends(current_user),db:Session=Depends(get_db)):
     p=db.scalar(select(Perfume).where(Perfume.id==perfume_id,Perfume.user_id==user.id))
     if not p: raise HTTPException(404,'Fragrance not found')
-    db.delete(p); user.preference_revision+=1; db.commit(); return {'ok':True}
+    image_name=Path(p.image_path).name if p.image_path else ''
+    db.delete(p); user.preference_revision+=1; db.commit()
+    if image_name: (UPLOAD_DIR/image_name).unlink(missing_ok=True)
+    return {'ok':True}
 
 @app.post('/api/preferences',dependencies=[Depends(csrf)])
 def save_prefs(data:PrefsIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -317,6 +318,15 @@ def usage(user:User=Depends(current_user),db:Session=Depends(get_db)):
     for r in rows: feature[r.feature]=feature.get(r.feature,0)+1
     return {'today_requests':db.scalar(select(func.count(Usage.id)).where(Usage.user_id==user.id,Usage.created_at>=day)) or 0,'month_requests':db.scalar(select(func.count(Usage.id)).where(Usage.user_id==user.id,Usage.created_at>=month)) or 0,'total_requests':all_count,'input_tokens':int(in_tok),'output_tokens':int(out_tok),'estimated_spending_usd':round(estimates,6),'provider_confirmed_spending_usd':round(total,6),'budget_remaining_usd':round(max(0,limit-total-estimates),4),'cache_hit_rate':round(hits/max(1,all_count),3),'model_breakdown':breakdown,'feature_breakdown':feature,'warning':(total+estimates)>=limit*.8,'recent':[{'feature':r.feature,'model':r.model,'input_tokens':r.input_tokens,'output_tokens':r.output_tokens,'estimated_cost_usd':r.estimated_cost,'actual_cost_usd':r.actual_cost,'cache_hit':r.cache_hit,'created_at':r.created_at.isoformat()} for r in rows]}
 
+@app.get('/api/collection/{perfume_id}/image')
+def collection_image(perfume_id:int,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    p=db.scalar(select(Perfume).where(Perfume.id==perfume_id,Perfume.user_id==user.id))
+    if not p or not p.image_path: raise HTTPException(404,'Fragrance image not found')
+    filename=Path(p.image_path).name
+    path=UPLOAD_DIR/filename
+    if not filename or not path.is_file(): raise HTTPException(404,'Fragrance image not found')
+    return FileResponse(path,headers={'Cache-Control':'private, max-age=3600'})
+
 @app.post('/api/collection/{perfume_id}/image',dependencies=[Depends(csrf)])
 async def upload_image(perfume_id:int,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
     p=db.scalar(select(Perfume).where(Perfume.id==perfume_id,Perfume.user_id==user.id))
@@ -326,4 +336,7 @@ async def upload_image(perfume_id:int,file:UploadFile=File(...),user:User=Depend
     if len(data)>5*1024*1024: raise HTTPException(413,'Image is larger than 5 MB')
     suffix={'image/jpeg':'jpg','image/png':'png','image/webp':'webp'}[file.content_type]
     path=UPLOAD_DIR; path.mkdir(parents=True,exist_ok=True); name=f'{user.id}-{perfume_id}-{secrets.token_hex(8)}.{suffix}'; (path/name).write_bytes(data)
-    p.image_path='/uploads/'+name; db.commit(); return {'image_path':p.image_path}
+    previous=Path(p.image_path).name if p.image_path else ''
+    p.image_path=name; db.commit()
+    if previous and previous!=name: (path/previous).unlink(missing_ok=True)
+    return {'image_path':f'/api/collection/{perfume_id}/image'}
