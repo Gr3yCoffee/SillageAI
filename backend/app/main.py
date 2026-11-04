@@ -156,9 +156,11 @@ def auth_status(request:Request,db:Session=Depends(get_db)):
     return {'configured':db.scalar(select(func.count(User.id)))>0,'authenticated':bool(user),'email':user.email if user else None}
 
 @app.get('/api/auth/csrf')
-def csrf_token(response:Response):
-    token=secrets.token_urlsafe(32)
-    response.set_cookie('sillage_csrf',token,httponly=False,samesite='lax',secure=_cookies_secure(),max_age=60*60*24)
+def csrf_token(request:Request,response:Response):
+    # Keep the CSRF cookie paired with the authenticated session. Rotating it
+    # here invalidates the session because current_user checks their equality.
+    token=request.cookies.get(COOKIE) or request.cookies.get('sillage_csrf') or secrets.token_urlsafe(32)
+    response.set_cookie('sillage_csrf',token,httponly=False,samesite='lax',secure=_cookies_secure(),max_age=60*60*24*14)
     return {'ok':True}
 
 @app.post('/api/auth/register',dependencies=[Depends(csrf)])
@@ -297,7 +299,7 @@ async def catalog_search(q:str=Query(min_length=2,max_length=80),user:User=Depen
             raise HTTPException(503,'Fragella search is unavailable right now. You can still add the fragrance manually.')
 
 def serialize_perfume(p):
-    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':f'/api/collection/{p.id}/image' if p.image_path else None,'feedback_score':p.feedback_score,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or [],'catalog_metadata':p.catalog_metadata or {}}
+    return {'id':p.id,'name':p.name,'brand':p.brand,'family':p.family,'secondary_family':p.secondary_family,'character':p.character,'notes':p.notes or [],'longevity':p.longevity,'projection':p.projection,'season':p.season or [],'image_path':f'/api/collection/{p.id}/image' if p.image_path else None,'feedback_score':p.feedback_score,'is_favorite':p.is_favorite,'release_year':p.release_year,'gender':p.gender,'concentration':p.concentration,'description':p.description,'source_url':p.source_url,'wear_times':p.wear_times or [],'catalog_metadata':p.catalog_metadata or {}}
 
 async def _save_fragella_image(url:str|None)->str|None:
     if not url: return None
@@ -348,6 +350,15 @@ def delete_perfume(perfume_id:int,user:User=Depends(current_user),db:Session=Dep
     db.delete(p); user.preference_revision+=1; db.commit()
     if image_name: (UPLOAD_DIR/image_name).unlink(missing_ok=True)
     return {'ok':True}
+
+@app.post('/api/collection/{perfume_id}/favorite',dependencies=[Depends(csrf)])
+def toggle_favorite(perfume_id:int,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    p=db.scalar(select(Perfume).where(Perfume.id==perfume_id,Perfume.user_id==user.id))
+    if not p: raise HTTPException(404,'Fragrance not found')
+    p.is_favorite=not p.is_favorite
+    user.preference_revision+=1
+    db.commit()
+    return {'is_favorite':p.is_favorite}
 
 @app.post('/api/preferences',dependencies=[Depends(csrf)])
 def save_prefs(data:PrefsIn,user:User=Depends(current_user),db:Session=Depends(get_db)):

@@ -35,6 +35,7 @@ class Perfume(Base):
     wear_times: Mapped[list] = mapped_column(JSON, default=list)
     catalog_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     feedback_score: Mapped[float] = mapped_column(Float, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
